@@ -1,0 +1,597 @@
+---
+title: "Pràctica 2: Tractament del dataset Titanic"
+author: "Daniel Lopez Ramirez"
+date: '`r format(Sys.Date(),"%e de %B, %Y")`'
+output:
+  html_document:
+    toc: yes
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load_libraries, include=FALSE}
+library(knitr)
+library(kableExtra)
+library(pROC)
+#library(nortest)
+library(ggplot2)
+library(dplyr)
+library(DescTools)
+library(missForest)
+library(corrplot)
+library(ggthemes)
+set.seed(12345)
+```
+
+# 1. Descripció del Dataset.
+
+El dataset utilitzat és el que correspon al **Titanic: Machine Learning from Disaster** <https://www.kaggle.com/c/titanic> de kaggle.
+Aquest dataset conté tres fitxers csv, dos amb les mostres de train i test dels passatgers que hi havia al Titanic, i que es diferencien en que el fitxer de test no conté el valor de si la persona va sobreviure o no. I el tercer fitxer és una relació dels id's dels passatgers amb el valor de si va sobreviure o no per a la mostra de test.  
+Aquest dataset és important perquè permet estudiar quins passatgers van ser els més afectats per a l'incident del Titanic tenint en compte la classe en la que viatjaven, el sexe o d'altres variables, cosa que ens permet tenir més informació de com va succeir tot i intentar predir si el passatger va sobreviure o no, segons aquestes variables.
+
+```{r titanic_1_1}
+# Carreguem les dades dels fitxers
+titanic_train <- read.csv("../csv/train.csv",header=TRUE, sep=",", na.strings="NA", 
+                          dec=".", strip.white=TRUE)
+titanic_test <- read.csv("../csv/test.csv",header=TRUE, sep=",", na.strings="NA", 
+                         dec=".", strip.white=TRUE)
+gender_submission <- read.csv("../csv/gender_submission.csv",header=TRUE, sep=",", na.strings="NA", 
+                              dec=".", strip.white=TRUE)
+```
+
+El dataset conté les següents dades:
+
+| Variable 	| Definició 	| Clau 	| Notes 	|
+|----------	|--------------------------------------------	|-----------------------------------	|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------	|
+| PassengerId 	| Identificador del passatger	|  	|  	|
+| Survived 	| Supervivent 	| 0 = No, <br>1 = Yes 	|  	|
+| Pclass 	| Classe de ticket 	| 1 = 1st, <br>2 = 2nd, <br>3 = 3rd 	| A proxy for socio-economic status (SES)<br>1st = Upper<br>2nd = Middle<br>3rd = Lower 	|
+| Name 	| Nom del passatger 	|  	|  	|
+| Sex 	| Sexe 	|  	|  	|
+| Age 	| Edat en anys 	|  	| Age is fractional if less than 1. <br>If the age is estimated, is it in the <br>form of xx.5 	|
+| Sibsp 	| Nombre de germans/conjugues a bord 	|  	| The dataset defines family relations in this way...<br>Sibling = brother, sister, stepbrother, stepsister<br>Spouse = husband, wife (mistresses and fiancés were ignored) 	|
+| Parch 	| Nombre de pares/fills a bord 	|  	| The dataset defines family relations in this way...<br>Parent = mother, father<br>Child = daughter, son, stepdaughter, stepson<br>Some children travelled only with a nanny, therefore parch=0 for them. 	|
+| Ticket 	| Número de ticket	|  	|  	|
+| Fare 	| Tarifa 	|  	|  	|
+| Cabin 	| Número de cabina 	|  	|  	|
+| Embarked 	| Port d'embarcament	|  	| C = Cherbourg, Q = Queenstown, S = Southampton 	|
+
+# 2. Integració i selecció de les dades d'interes
+
+Primer de tot farem unb primer anàlisi visual de les dades que contenen els datasets carregats.
+
+```{r titanic_2_1}
+# Revisem la informació del fitxer train.csv
+summary(titanic_train)
+head(titanic_train)
+#sapply(titanic_train, function(x)class(x))
+str(titanic_train)
+colSums(is.na(titanic_train))
+colSums(titanic_train=="")
+```
+
+El conjunt de training conté 891 observacions de 12 variables. D'aquestes 12 variables, hi ha algunes variables que el seu contingut no ens ajudarà per a la predicció, com són el número de ticket (Ticket) i el nom del passatger (Name).
+D'altra banda, hi ha variables que haurem de tractar i/o convertir, com:  
+  * Convertir la variable *Survived* a factor.  
+  * Convertir la variable *Pclass* a factor.  
+  * Tractar la variable *Cabin* per extreure la coberta de la cabina i revisar els valors buits que conté.  
+  * Tractar la variable *Age*, ja que hi ha força valors buits.  
+  * Tractar la variable *Embarked*, ja que conté alguns valors buits.  
+
+```{r titanic_2_2}
+# Revisem la informació del fitxer test.csv
+summary(titanic_test)
+head(titanic_test)
+#sapply(titanic_test, function(x)class(x))
+str(titanic_test)
+colSums(is.na(titanic_test))
+colSums(titanic_test=="")
+```
+
+El conjunt de test conté 418 observacions de 11 variables. En aquest cas, no conté la variable *Survived* ja que és la que hem de predir. Tal com hem comentat amb el conjunt de training, eliminarem algunes variables com el número de ticket (Ticket) i el nom del passatger (Name). D'altra banda, hi ha variables que haurem de tractar i/o convertir, com:  
+  * Convertir la variable *Pclass* a factor.  
+  * Tractar la variable *Cabin* per extreure la coberta de la cabina. En aquest cas, veiem que hi han molts valors de la variable que estàn buits, i que haurem de tractar.  
+  * Tractar la variable *Age*, ja que hi ha força valors buits.  
+  * Tractar la variable *Fare*, ja que conté un valor buit.
+
+```{r titanic_2_3}
+# Revisem la informació del fitxer gender_submission.csv
+summary(gender_submission)
+head(gender_submission)
+#sapply(gender_submission, function(x)class(x))
+str(gender_submission)
+colSums(is.na(gender_submission))
+```
+
+El conjunt de *gender_submission* conté els valors correctes de la variable *Survived* per al conjunt de test. L'unica tasca que haurem de realitzar és convertir la variable *Survived* a factor.
+
+Un cop revisats els diversos conjunt de dades, anem a factoritzar les variables *Pclass* i *Survived*:
+
+```{r titanic_2_4}
+titanic_train$Pclass <- as.factor(titanic_train$Pclass)
+titanic_test$Pclass <- as.factor(titanic_test$Pclass)
+titanic_train$Survived<- as.factor(titanic_train$Survived)
+```
+
+# 3. Neteja de dades
+
+## 3.1. Les dades contenen zeros o elements buits? Com gestionaries aquests casos?
+
+Tal com hem comentat en l'apartat anterior algunes variables contenen zeros o elements buits. Per a poder gestionar aquests casos, combinarem els dos datasets. Per a combinar-los, afegirem la variable *Survived* al dataset de test per a després utilitzar *rbind* per a combinar-los.
+
+```{r titanic_3_1_1}
+titanic_test_survived <- titanic_test
+titanic_test_survived$Survived <- NA
+titanic <- rbind(titanic_train,titanic_test_survived)
+```
+
+Amb els dos datasets combinats, avaluem la nova informació:
+
+```{r titanic_3_1_2}
+summary(titanic)
+head(titanic)
+#sapply(titanic_test, function(x)class(x))
+str(titanic)
+colSums(is.na(titanic))
+colSums(titanic=="")
+```
+
+Com podem observar la variable *Cabin* conté molts valors buits (sobre un 80%), amb el que transformarem la variable en una nova variable, que indiqui si el passatger tenia cabina o no.
+
+```{r titanic_3_1_3}
+titanic$WithCabin <- ifelse(titanic$Cabin=="", "0","1")
+titanic$WithCabin <- as.factor(titanic$WithCabin)
+```
+
+Pel que fa a la variable *Embarked*, conté dos valors buits. Anem a avaluar les possibles relacions de la variable Embarked amb les altres variables del dataset.
+
+```{r titanic_3_1_4}
+titanic[titanic$Embarked=="",]
+```
+
+Com podem veure, els dos passatgers que no ténen el port d'embarcament informat són dones que van sobreviure al naufragi i que anaven en primera classe. Tenint en compte aquesta informació, anem a avaluar quin és el valor més adient per aquests passatgers.
+
+```{r titanic_3_1_5}
+table(titanic$Embarked,titanic$Sex,titanic$Pclass,titanic$Survived)
+```
+
+En aquest cas, ens interessa la taula on la *classe és 1 i els passatgers van sobreviure*:
+
+|  	| female 	| male 	|
+|---	|--------	|------	|
+|  	| 2 	| 0 	|
+| C 	| 42 	| 17 	|
+| Q 	| 1 	| 0 	|
+| S 	| 46 	| 28 	|
+
+Segons la taula, el valor d'embarcament amb més freqüencia és *S* (Southampton), encara que el valor *C* (Cherbourg) també és força elevat, però si avaluem les dades tenint en compte els passatgers que van sobreviure, veurem que la majoria van embarcar a *S*. Per tant, als dos passatgers que no tenen el port d'embarcament els hi assignarem la *S*.
+
+```{r titanic_3_1_6}
+titanic$Embarked <- as.character(titanic$Embarked)
+titanic$Embarked[titanic$Embarked==""] <- "S"
+titanic$Embarked <- as.factor(titanic$Embarked)
+```
+
+Una altra variable que conté un valor buit, és la variable *Fare*. El registre conté les següents dades:
+
+```{r titanic_3_1_7}
+titanic[is.na(titanic$Fare) ,]
+```
+
+Com podem veure, el passatger és un home, que va embarcar a Southampton i que era de tercera classe. Com que és només un registre el que hem de corregir, utilitzarem la mitjana del valor de *Fare* de tots els homes que van embarcar a Southampton a tercera classe:
+
+```{r titanic_3_1_8}
+titanic$Fare[is.na(titanic$Fare)] <- mean(titanic$Fare[titanic$Pclass=="3" 
+                            & titanic$Embarked =="S" & titanic$Sex=="male"],na.rm=TRUE)
+```
+
+Finalment, hem de tractar els valors buits de la variable *Age*. Per a aquest tractament, utilitzarem la funció **missForest**, ja que és un mètode més robust per a corregir els valors buits. Per a poder utilizar-la, crearem un nou dataset, extraient variables que no utilitzarem posteriorment com *Name*, *Cabin*, *Ticket* i *Survived* (En aquest cas, la treiem per a que no calculi els valors buits de test).
+
+```{r titanic_3_1_9}
+titanic_1 <- subset(titanic, select = -c(Name,Ticket,Cabin,Survived))
+titanic_mForest <- missForest(titanic_1,variablewise = TRUE)
+colSums(is.na(titanic_mForest$ximp))
+titanic_mForest_data <- titanic_mForest$ximp
+titanic_mForest_data$Survived <- titanic$Survived
+```
+
+Amb això ja tindriem les dades tractades:
+
+```{r titanic_3_1_10}
+str(titanic_mForest_data)
+colSums(is.na(titanic_mForest_data))
+colSums(titanic_mForest_data=="")
+```
+
+## 3.2. Identificació i tractament de valors extrems.
+
+Per avaluar utilitzarem els gràfics **boxplot** sobre les variables de la mostra. No tindrem en compte les variables factoritzades per aquest anàlisi, ja que tots els seus valors estan dintre dels seus valors possibles (*Pclass*, *Sex*, *Embarked*, *WithCabin*).
+
+Començarem per la variable *Age*:
+
+```{r titanic_3_2_1}
+boxplot(titanic_mForest_data$Age)
+ggplot(data=titanic_mForest_data, aes(titanic_mForest_data$Survived, titanic_mForest_data$Age)) + geom_boxplot()+ ggtitle('Gràfic de l\'edat dels passatgers segons si han sobreviscut')
+```
+
+Com s'observa en el gràfic, podriem tenir diversos outliers a partir de 60 anys, però realment, podia haver-hi persones d'aquesta edat a la mostra. Per tant, donarem per vàlida la mostra i no aplicarem cap tractament als valors extrems de *Age*.
+
+Analitzem ara la variable *Fare*:
+
+```{r titanic_3_2_2}
+boxplot(titanic_mForest_data$Fare)
+ggplot(data=titanic_mForest_data, aes(titanic_mForest_data$Survived, titanic_mForest_data$Fare)) + geom_boxplot()+ ggtitle('Gràfic de la tarifa pagada pels passatgers segons si han sobreviscut')
+```
+
+Observem que hi ha un outlier molt diferenciat de tots els altres (per sobre de 500$), però que apareix tant a la mostra de training com a la mostra de test. Per tant, hem de revisar aquests valors:
+
+```{r titanic_3_2_3}
+ggplot(data=titanic_mForest_data, aes(titanic_mForest_data$Pclass, titanic_mForest_data$Fare)) + geom_boxplot()+ ggtitle('Gràfic de la tarifa pagada pels passatgers segons la classe del ticket')
+ggplot(data=titanic_mForest_data, aes(titanic_mForest_data$Embarked, titanic_mForest_data$Fare)) + geom_boxplot()+ ggtitle('Gràfic de la tarifa pagada pels passatgers segons el port d\'embarcament')
+
+```
+
+Tal com observem als gràfics, els passatgers que van pagar més de 500$ per un ticket, van embarcar al mateix port i anaven en primera classe. Per tant, és possible que aquests passatgers paguessin per un camarot molt exclussiu de primera classe. Per tant, donem per vàlida la mostra i no aplicarem cap tractament als valors extrems de *Fare*.
+
+Finalment, tractarem els outliers de les variables *Parch* i *SibSp*:
+
+```{r titanic_3_2_4}
+boxplot(titanic_mForest_data$Parch)
+ggplot(data=titanic_mForest_data, aes(titanic_mForest_data$Survived, titanic_mForest_data$Parch)) + geom_boxplot()+ ggtitle('Gràfic dels pares/fills dels passatgers segons si han sobreviscut')
+```
+
+```{r titanic_3_2_5}
+boxplot(titanic_mForest_data$SibSp)
+ggplot(data=titanic_mForest_data, aes(titanic_mForest_data$Survived, titanic_mForest_data$SibSp)) + geom_boxplot()+ ggtitle('Gràfic dels germans/conjugues dels passatgers segons si han sobreviscut')
+```
+
+Aquestes dues variables que estàn relacionades amb les families de passatgers, poden presentar algun outlier tenint en compte que tenen valors força elevats, però tenint en compte que aquestes variables contenen informació que no serà rellevant per al nostre estudi no tractarem aquesta informació. El que farem és crear una nova variable que indiqui si el passatger viatjava sol o amb familia, i la utilitzarem per al nostres estudi.
+
+```{r titanic_3_2_6}
+titanic_mForest_data$PassAlone <- ifelse(titanic_mForest_data$SibSp + 
+                                           titanic_mForest_data$Parch>0, 0,1)
+titanic_mForest_data$PassAlone <- as.factor(titanic_mForest_data$PassAlone)
+```
+
+# 4. Anàlisi de les dades.
+
+Un cop hem tractat les dades, eliminem les columnes que no utilitzarem (com *PassengerId*, *SibSp* i *Parch* ),tornem a separar els datasets i els guardem com a fitxers CSV.
+
+```{r titanic_4_1}
+titanic_mForest_data <- subset(titanic_mForest_data,select = -c(SibSp,Parch))
+titanic_train<-titanic_mForest_data[!is.na(titanic$Survived),] 
+titanic_test<-titanic_mForest_data[is.na(titanic$Survived),]
+titanic_train<-subset(titanic_train,select = -PassengerId)
+titanic_test <- subset(titanic_test,select = -Survived)
+write.csv(titanic_train,"../csv/train_clean.csv")
+write.csv(titanic_test,"../csv/test_clean.csv")
+```
+
+## 4.1. Selecció dels grups de dades que es volen analitzar/comparar (planificació dels anàlisis a aplicar).
+
+Abans de començar a seleccionar grups, anem a revisar la correlació entre les diverses variables de la mostra generant gràfics entre les diverses variables:
+
+```{r titanic_4_1_1, echo=FALSE}
+ggplot(data = titanic_train) + geom_bar(aes(x=Pclass,fill=Survived, position = "stack"))
+ggplot(data = titanic_train) + geom_bar(aes(x=Sex,fill=Survived, position = "stack")) + facet_wrap(~ Pclass)
+ggplot(data = titanic_train) + geom_bar(aes(x=Embarked,fill=Survived, position = "stack")) + facet_wrap(~ Pclass)
+ggplot(data = titanic_train) + geom_bar(aes(x=WithCabin,fill=Survived, position = "stack")) + facet_wrap(~ Pclass)
+ggplot(data = titanic_train) + geom_bar(aes(x=PassAlone,fill=Survived, position = "stack")) + facet_wrap(~ Pclass)
+ggplot(data = titanic_train,aes(x=Age, fill=Survived)) + geom_histogram(binwidth =4, position="fill")
+ggplot(data = titanic_train,aes(x=Fare, fill=Survived)) + geom_histogram(binwidth =10, position="fill")
+```
+
+Com es pot observar amb els gràfics generats:  
+
+* El major nombre de passatgers que van sobreviure van ser de primera classe.  
+* Les dones van ser les que van sobreviure més del naufragi, en vers dels homes (a prod d'un 50% més).  
+* En quant a l'embarcament, van sobreviure més passatgers que van embarcar a Southampton, ja que va ser el port on va embarcar més gent, però si ho avaluem pel ratio dels passatgers embarcats i passatgers que van sobreviure, Cherbourg té un millor ratio, i per tant va sobreviure més gent de la que va embarcar a Cherbourg.  
+* Els passatgers amb cabina, van sobreviure més, en proporció, que els passatgers sense cabina.  
+* La variable que indica si els passatgers tenien familia o no, no sembla tenir gaire relació amb si els passatgers han sobreviscut o no.  
+* En quant a l'edat dels passatgers, la major mortalitat es registra entre els 8-10 anys i els 40-45 anys, tenint una mortalitat total sobre els 65 anys.  
+* La tarifa ens indica que contra més baixa era la tarifa més mortalitat hi va haver, encara que podem observar algunes excepcions.
+
+Per tant, podem dir que les variables que poden tenir relació sobre la supervivència poden ser: *Pclass*, *Sex*, *Embarked*, *WithCabin*, *Age* i *Fare*.
+
+```{r titanic_4_1_2}
+titanic_train_classe1 <- titanic_train[titanic_train$Pclass==1,]
+titanic_train_classe2 <- titanic_train[titanic_train$Pclass==2,]
+titanic_train_classe3 <- titanic_train[titanic_train$Pclass==3,]
+titanic_train_dona<- titanic_train[titanic_train$Sex==0,]
+titanic_train_home <- titanic_train[titanic_train$Sex==1,]
+titanic_train_classe1 <- titanic_train[titanic_train$Pclass==1,]
+titanic_train_EmbC <- titanic_train[titanic_train$Embarked=="C",]
+titanic_train_EmbQ <- titanic_train[titanic_train$Embarked=="Q",]
+titanic_train_EmbS <- titanic_train[titanic_train$Embarked=="S",]
+# Desfactoritzem les variables necessàries
+titanic_train$WithCabin <- as.numeric(as.character(titanic_train$WithCabin))
+titanic_train$Sex <- as.numeric(titanic_train$Sex)
+titanic_train$Pclass <- as.numeric(as.character(titanic_train$Pclass))
+titanic_train$PassAlone <- as.numeric(as.character(titanic_train$PassAlone))
+titanic_train$Survived <-as.numeric(as.character(titanic_train$Survived))
+titanic_test$WithCabin <- as.numeric(as.character(titanic_test$WithCabin))
+titanic_test$Sex <- as.numeric(titanic_test$Sex)
+titanic_test$Pclass <- as.numeric(as.character(titanic_test$Pclass))
+titanic_test$PassAlone <- as.numeric(as.character(titanic_test$PassAlone))
+```
+
+## 4.2. Comprovació de la normalitat i homogeneïtat de la variància.
+
+Per a comprovar la normalitat utilitzarem el test de *Shapiro-Wilk* sobre les variables de la mostra que son numèriques. D'altra banda al ser una mostra amb més de 30 registres, podem comsiderar el *Teorema del Limit Central* per assegurar que la mostra segueix una distribució normal.
+
+```{r titanic_4_2_1}
+shapiro.test(titanic_train[,"Age"])
+shapiro.test(titanic_train[,"Fare"])
+```
+
+Com podem observar amb el test realitzat, el p-value és menor que el nivell de significació, i per tant no podem assegurar que segueixi una distribució normal. Si realitzem els *Q-Qplot* de les dues variables:
+
+```{r titanic_4_2_2}
+qqnorm(titanic_train$Age, pch = 19, col = "green",main="Edat dels passatgers")
+qqline(titanic_train$Age)
+qqnorm(titanic_train$Fare, pch = 19, col = "green",main="Tarifes pagades pels passatgers")
+qqline(titanic_train$Fare)
+```
+
+Es veu com la distribució de l'edat dels passatgers s'assembla a una distribució normal, en canvi la tarifa, clarament, no segueix una distribució normal. 
+
+Els diversos tests realitzats ens indiquen que la mostra no segueix una distribució normal, però com la mostra (tant de training com de test) és suficientment elevada, segons el teorema del limit central, aquesta mostra seguirà una distribució normal.
+
+Per estudiar la homogeneitat de les variances utilitzarem el test no paramètric de *Fligner-Killen*, ja que com hem comprobat anteriorment les variables no segueixen una distribució normal.
+
+```{r titanic_4_2_3}
+fligner.test(Age ~ Survived, data = titanic_train)
+fligner.test(Fare ~ Survived, data = titanic_train)
+```
+
+Tal com indiquen els tests, la variable *Age* al tenir un *p-value* superior a 0.05 podem dir que les variancies de les mostres son homogènies. En canvi la variable *Fare* té un *p-value* menor a 0.05 i per tant, les variancies de les mostres no son homogènies.
+
+## 4.3. Aplicació de proves estadístiques per comparar els grups de dades. En funció de les dades i de l’objectiu de l’estudi, aplicar proves de contrast d’hipòtesis, correlacions, regressions, etc. Aplicar almenys tres mètodes d’anàlisi diferents.
+
+En aquest cas, aplicarem les següents proves estadístiques als grups de dades:  
+
+* Contrast d'Hipòtesis  
+* Anova  
+* Regressió Lineal Multivariable  
+* RandomForest  
+
+### 4.3.1. Contrast d'Hipòtesis
+
+#### 4.3.1.1 Contrast d'Hipòtesis variable *WithCabin*
+
+En aquest primer contrast avaluarem si la mitjana de passatgers amb cabina que van sobreviure és igual a la mitjana de passatgers sense cabina que van sobreviure, o bé la mitjana de passatgers amb cabina que van sobreviure és menor que la mitjana de passatgers sense cabina que van sobreviure.
+
+$$
+\left\{
+\begin{array}{ll}
+H_{0}: &  \mu_r=\mu_u\\
+H_{1}: & \mu_r<\mu_u
+\end{array}
+\right.
+$$
+Primer de tot, creem totes les variables necessàries per al test:
+```{r titanic_4_3_1_1_1}
+titanic_train_wcabin <- titanic_train$Survived[titanic_train$WithCabin==0]
+titanic_train_wocabin <- titanic_train$Survived[titanic_train$WithCabin==1]
+```
+Amb aquestes variables avaluem si les variances són iguals:
+
+```{r titanic_4_3_1_1_2}
+var.test(titanic_train_wcabin, titanic_train_wocabin, conf.level=.95,
+         alternative = "less")
+```
+
+El *p-valor* és superior a 0.05, per tant no hi ha una diferència significativa entre les dues variances i podem utilitzar el mètode paramètric de variances desconegudes però iguals.
+
+```{r titanic_4_3_1_1_3}
+titanic_tstud_Cab<-t.test(titanic_train_wcabin, titanic_train_wocabin, var.equal = TRUE,
+                          alternative = "less")
+print(titanic_tstud_Cab)
+```
+
+Aplicant la *T d'Student*, observem que el *p-value* és més petit que 0.05 i per tant podem rebutjar la hipòtesi nul·la de que la mitjana de passatgers amb cabina que van sobreviure és igual a la mitjana de passatgers sense cabina que van sobreviure. Podem afirmar que es compleix la hipòtesi alternativa de que la mitjana de passatgers amb cabina que van sobreviure és més gran que la mitjana de passatgers sense cabina que van sobreviure.
+
+#### 4.3.1.2 Contrast d'Hipòtesis variable *Sex*
+
+En aquest primer contrast avaluarem si la mitjana de dones que van sobreviure és igual a la mitjana d'homes que van sobreviure, o bé la mitjana de dones que van sobreviure és més gran que la mitjana d'homes que van sobreviure.
+
+$$
+\left\{
+\begin{array}{ll}
+H_{0}: &  \mu_r=\mu_u\\
+H_{1}: & \mu_r>\mu_u
+\end{array}
+\right.
+$$
+
+Primer de tot, creem totes les variables necessàries per al test:
+
+```{r titanic_4_3_1_2_1}
+titanic_train_dones <- titanic_train$Survived[titanic_train$Sex==1]
+titanic_train_homes <- titanic_train$Survived[titanic_train$Sex==2]
+```
+Amb aquestes variables avaluem si les variances són iguals:
+
+```{r titanic_4_3_1_2_2}
+var.test(titanic_train_dones, titanic_train_homes, conf.level=.95,
+         alternative="greater")
+```
+
+El *p-valor* és inferior a 0.05, per tant hi ha una diferència significativa entre les dues variances.
+
+```{r titanic_4_3_1_2_3}
+titanic_tstud_Sex<-t.test(titanic_train_dones, titanic_train_homes, var.equal = FALSE,
+                          alternative = "greater")
+print(titanic_tstud_Sex)
+```
+
+Aplicant la *T d'Student*, observem que el *p-value* és menor que 0.05 i per tant podem rebutjar la hipòtesi nul·la de que la mitjana de dones que van sobreviure és igual a la mitjana d'homes que van sobreviure i per tant podem afirmar que es compleix la hipòtesi alternativan de que la mitjana de dones que van sobreviure és més gran que la mitjana d'homes que van sobreviure.
+
+### 4.3.2. Anova multifactorial
+
+En aquest cas volem contrastar la hipòtesi de  diverses variables de la mostra on la hipòtesi nul·la és que totes les mitjanes poblacionals de la mostra són iguals, i la hipòtesi alternativa, que no totes les mitjanes poblacionals són iguals. Utilitzarem les variables *Pclass*, *Sex* i *Age*.
+
+```{r titanic_4_3_2_1}
+titanic_train_aov <- aov(Survived~Pclass+Sex+Age+Pclass:Sex+Pclass:Age+Sex:Age,
+                         data=titanic_train)
+summary(titanic_train_aov)
+```
+
+Tal com es pot observar, la major part dels p-valors són menors que 0.05, però hi ha dos que els valors si que són més grans. Tot i això podem rebutjar la hipòtesi nul·la i assegurar que no totes les mitjanes de les variables són iguals. Si avaluem el valor F, el factor *Sex* té el valor més alt, seguit del factor *Pclass* per tant aquests dos factors són més significatius que els altres.
+
+### 4.3.3. Regressió Lineal Multifactorial
+
+Un cop hem avaluat les diverses variables de la mostra per a veure si poden ser importants en el model o no, anem a utilitzar un model de regressió lineal per a realitzar les prediccions.
+
+```{r titanic_4_3_3_1}
+titanic_train$Survived <- as.numeric(titanic_train$Survived)
+titanic_lr <- lm(formula=Survived ~ Pclass + Sex + Age + Fare + Embarked + WithCabin + PassAlone,
+                 data = titanic_train)
+summary(titanic_lr)
+```
+
+Revisant els regressors del model de regressió resultant individualment, es pot observar que tots els valors són menors de 0.05 excepte *Fare*, *EmbarkedQ* i *PassAlone* i per tant en tots aquests valors que són menors, podem rebutjar la hipòtesi nul·la i dictaminar que aquests regressors són vàlids per a predir la qualitat del son. En canvi, els altres regressors tenen un valor superior a 0.05 i per tant, no podem rebutjar la hipòtesi nul·la de que no és un regressor vàlid per a predir la supervivència del passatger.  
+
+Segons els valors d’R2 i p-value obtinguts al model, estem davant d’un model poc precís, ja que explica el **39.28%** de la variabilitat de la supervivència del passatger.
+
+Amb el model creat, anem a predir la supervivència dels passatgers de la mostra de test:
+
+```{r titanic_4_3_3_2}
+titanic_lr_pred <- data.frame(predict.lm(titanic_lr,newdata=titanic_test,
+                                         interval="prediction"))
+titanic_lr_pred_df<- data.frame(ifelse(titanic_lr_pred$fit<0.5,0,1)) 
+colnames(titanic_lr_pred_df) <- c("Survived")
+titanic_lr_cm <- with(gender_submission,table(titanic_lr_pred_df$Survived, Survived))
+titanic_lr_pred_error <- 100 * titanic_lr_cm[2] / sum(titanic_lr_cm)
+Output_lr<- data.frame(PassengerID = gender_submission$PassengerId, 
+                       Survived = titanic_lr_pred_df$Survived)
+write.csv(Output_lr, file = "../csv/test_lr_pred.csv")
+```
+
+Un cop realitzada la predicció, veiem que el ratio d'encert és del **36.36%**, un ratio de predicció molt baix, que ja ens esperàvem després d'haver vist els resultats del model.
+
+### 4.3.4. RandomForest
+
+Finalment, aplicarem un arbre de classificació de tipus *RandomForest*, ja que aquests tipus d'arbres milloren la tasa de classificació ja que combinen el resultat de multiples Arbres de Decisió en diferents mostres per reduïr la variació en les prediccions, i així minimitzar l'Over-fitting que es produeix amb els Arbres de Decisió normals.
+
+Executem el *RandomForest* sobre totes les variables que tenim en la mostra de training:
+
+```{r titanic_4_3_4_1}
+titanic_train$Survived <- as.factor(titanic_train$Survived)
+titanic_rf <- randomForest(Survived ~ Pclass + Sex + Age + Fare + Embarked + WithCabin + PassAlone,
+                           data = titanic_train)
+titanic_rf
+```
+
+L'estimació de l'error és d'un 18% amb aquest mètode. Generem la gràfica amb els errors de predicció:
+
+```{r titanic_4_3_4_2}
+plot(titanic_rf, ylim=c(0,0.36))
+legend('topright', colnames(titanic_rf$err.rate), col=1:3, fill=1:3)
+```
+
+En la gràfica podem observar els errors en la predicció tant de passatgers vius com morts, com la mitjanan entre els dos valors. Podem observar que és més fàcil predir els passatgers que moren que els que viuen.
+
+```{r titanic_4_3_4_3}
+titanic_rf$importance
+```
+
+La importància dels diversos paràmetres en la classificació queda palesa en la taula anterior, on es pot observar que els paràmetres *Sex*, *Fare*, *Age* i *Pclass* són els més importants per a la classificació. Amb el model generat, anem a generar la predicció de la mostra de test:
+
+```{r titanic_4_3_4_4}
+titanic_rf_pred <- predict(titanic_rf,titanic_test)
+(titanic_rf_cm <- with(gender_submission,table(titanic_rf_pred, Survived)))
+titanic_rf_pred_error <- 100 * sum(diag(titanic_rf_cm)) / sum(titanic_rf_cm)
+print(titanic_rf_pred_error)
+Output_rf<- data.frame(PassengerID = gender_submission$PassengerId, Survived = titanic_rf_pred)
+write.csv(Output_rf, file = "../csv/test_rf_pred.csv")
+```
+
+Com podem observar, el model ha predit correctament un **85.65%** dels casos de la mostra de test.
+
+# 5. Representació dels resultats a partir de taules i gràfiques.
+
+En tot l'estudi que estem realitzant, a part de realitzar la neteja de les dades, també hem aplicat proves estadístiques sobre les dades, primer, per obtenir més informació sobre les variables de la mostra a l'hora d'utilitzar-les en models de predicció així com els models de predicció que s'han generat i testejat amb les mostres.
+
+Primer de tot hem realitzat dos contrast d'hipòtesis sobre les variables *WithCabin* i *Sex*:
+
+```{r titanic_5_1}
+print(titanic_tstud_Cab)
+print(titanic_tstud_Sex)
+```
+
+Per a la variable *WithCabin*, podem afirmar que es compleix la hipòtesi alternativa de que la mitjana de passatgers amb cabina que van sobreviure és més gran que la mitjana de passatgers sense cabina que van sobreviure.
+
+Per a la variable *Sex*, podem afirmar que es compleix la hipòtesi alternativan de que la mitjana de dones que van sobreviure és més gran que la mitjana d’homes que van sobreviure.
+
+Seguidament hem realitzat una ANOVA Multifactorial per contrastar la hipòtesi de diverses variables de la mostra on la hipòtesi nul·la és que totes les mitjanes poblacionals de la mostra són iguals, i la hipòtesi alternativa, que no totes les mitjanes poblacionals són iguals. Utilitzarem les variables Pclass, Sex i Age.
+
+```{r titanic_5_2}
+summary(titanic_train_aov)
+```
+
+El resultat obtingut indica que la major part dels p-valors són menors que 0.05, però hi ha dos que els valors si que són més grans. Tot i això podem rebutjar la hipòtesi nul·la i assegurar que no totes les mitjanes de les variables són iguals. Si avaluem el valor F, el factor *Sex* té el valor més alt, seguit del factor *Pclass* per tant aquests dos factors són més significatius que els altres.
+
+Un cop hem obtingut informació sobre les dades, passem a aplicar models de predicció. Primer, s'ha crear un model de regressió lineal:
+
+```{r titanic_5_3}
+print(titanic_lr_cm)
+print(titanic_lr_pred_error)
+```
+
+Segons els valors d’R2 i p-value obtinguts al model,aquest model és poc precís, ja que explica el **39.28%** de la variabilitat de la supervivència del passatger. Aquests valors del model s'han traduït en un ratio d'encert de predicció molt baix, **36.36%**, i per tant, aquest model no seria un bon model per a la predicció dels supervivents del Titanic.
+
+Un cop avaluat el model de regressió lineal, hem provat amb un model *RandomForest*:
+
+```{r titanic_5_4_1}
+plot(titanic_rf, ylim=c(0,0.36))
+legend('topright', colnames(titanic_rf$err.rate), col=1:3, fill=1:3)
+```
+
+En la gràfica podem observar els errors en la predicció tant de passatgers vius com morts, com la mitjanan entre els dos valors. Podem observar que és més fàcil predir els passatgers que moren que els que viuen. L’estimació de l’error és d’un **18%**.
+
+```{r titanic_5_4_2}
+importance    <- importance(titanic_rf)
+varImportance <- data.frame(Variables = row.names(importance), 
+                            Importance = round(importance[ ,'MeanDecreaseGini'],2))
+rankImportance <- varImportance %>% mutate(Rank = paste0('#',dense_rank(desc(Importance))))
+ggplot(rankImportance, aes(x = reorder(Variables, Importance), 
+                           y = Importance, fill = Importance)) +
+  geom_bar(stat='identity') + 
+  geom_text(aes(x = Variables, y = 0.5, label = Rank),
+            hjust=0, vjust=0.55, size = 4, colour = 'red') +
+  labs(x = 'Variables') +
+  coord_flip() +
+  theme_few()
+```
+
+Aquest gràfic ens explica de manera visual la importància dels diversos paràmetres del model, on es pot observar que els paràmetres *Sex*, *Fare*, *Age* i *Pclass* són els més importants per a la classificació.
+
+```{r titanic_5_4_3}
+print(titanic_rf_cm)
+print(titanic_rf_pred_error)
+```
+
+Com podem observar, el model ha predit correctament un **85.65%** dels casos de la mostra de test.
+
+# 6. Resolució del problema. A partir dels resultats obtinguts, quines són les conclusions? Els resultats permeten respondre al problema?
+
+Primer de tot, hem carregat les dades del dataset **Titanic: Machine Learning from Disaster**. hem realitzat una revissió de les dades per a netejar, corregir i crear variables en el dataset, per a després poder aplicar diversos mètodes estadístics.
+
+La idea era estudiar aquest dataset amb diversos models per a poder predir la supervivència o no d'un passatger del Titanic. Per aixó, el primer que hem fet és revisar la interelació entre les diverses variables del dataset i ens ha generat un nou subset de dades on les variables que podien tenir relació amb la supervivència eren *Pclass*, *Sex*, *Embarked*, *WithCabin*, *Age* i *Fare*.
+Amb aquest primer cribatge hem analitzat la relació entre elles, observant que *Sex* i *Pclass* podien ser els factors més significatius de la mostra a l'hora de realitzar prediccions.
+
+Per a fer proves de prediccions, hem seleccionat dos models: regressió lineal i random forest. El primer model no s'adaptava gaire bé a les dades, i per tant no és un bon model per a utilitzar en prediccions d'aquest dataset. En canvi el segon model, al ser un model que minimnitza l'over-fitting de les dades, ens ha donat uns resultats força bons, ja que la predicció ha arribat quasi a un **86%**. 
+
+Tot i que a la mostra tenim força variables i diverses, els mètodes emprats, ens han demostrat, que és un subconjunt més reduït d'aquestes variables, les que permeten una millor predicció del model, com són *Pclass*, *Sex* i *Age*.
+
+Amb aquests resultats, i afinant una mica més les diverses variables de la mostra podriem arribar a aconseguir un model amb una predicció millor, però tampoc seria gaire millor. Per tant, aquest resultat obtingut pel procés crec que és un bon resultat.
+
+
+
+
+
